@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:agroid/config/theme/theme.dart';
+import 'package:viser/config/theme/theme.dart';
 
 class SiomaLogo extends StatelessWidget {
   final double size;

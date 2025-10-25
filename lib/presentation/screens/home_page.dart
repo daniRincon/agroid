@@ -1,12 +1,11 @@
 import 'dart:math';
-import 'package:agroid/domain/services/face_recognition_service.dart';
-import 'package:agroid/domain/services/database_service.dart';
-import 'package:agroid/presentation/screens/admin_page.dart';
-import 'package:agroid/presentation/widgets/sioma_logo.dart';
+import 'package:viser/domain/services/face_recognition_service.dart';
+import 'package:viser/domain/services/database_service.dart';
+import 'package:viser/presentation/screens/admin_page.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:agroid/domain/models/registered_worker.dart';
-import 'package:agroid/domain/models/work_log.dart';
+import 'package:viser/domain/models/registered_worker.dart';
+import 'package:viser/domain/models/work_log.dart';
 
 class HomePage extends StatefulWidget {
   final FaceRecognitionService faceRecognitionService;
@@ -21,6 +20,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // Estado de la UI
   String _feedbackMessage = '';
   bool _isSuccess = false;
+  bool _isDetecting = false;
+  bool _isEntryMode = true; // true: entrada, false: salida
 
   // Estado de la cámara
   CameraController? _cameraController;
@@ -28,12 +29,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   final DatabaseService _dbService = DatabaseService();
 
+  int _recognitionAttempts = 0; // Contador de intentos
+  static const int _maxAttempts = 3;
+
   @override
   void initState() {
     super.initState();
+    print('🏠 Iniciando HomePage...');
     WidgetsBinding.instance.addObserver(this);
-    _initializeCamera();
-    widget.faceRecognitionService.loadModel(); // Inicializa el modelo TFLite
+    // No inicializar cámara al inicio
+    print('✅ HomePage inicializado');
   }
 
   @override
@@ -43,17 +48,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return;
-    }
-
-    if (state == AppLifecycleState.inactive) {
-      _cameraController?.dispose();
-    } else if (state == AppLifecycleState.resumed) {
-      _initializeCamera();
-    }
+  Future<void> _startDetection(bool isEntry) async {
+    setState(() {
+      _isDetecting = true;
+      _isEntryMode = isEntry;
+      _feedbackMessage = '';
+      _recognitionAttempts = 0; // Reiniciar intentos al comenzar
+    });
+    await _initializeCamera();
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _detectFaceAndProcess();
   }
 
   Future<void> _initializeCamera() async {
@@ -63,15 +67,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         (camera) => camera.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
-
       _cameraController = CameraController(
         frontCamera,
         ResolutionPreset.medium,
         enableAudio: false,
       );
-
       await _cameraController!.initialize();
-
       if (mounted) {
         setState(() {
           _isCameraInitialized = true;
@@ -82,12 +83,83 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _detectFaceAndProcess() async {
+    if (!_isCameraInitialized || _cameraController == null) return;
+    try {
+      final image = await _cameraController!.takePicture();
+      final embedding = await widget.faceRecognitionService.processImage(image);
+      
+      // Buscar coincidencia en la base de datos
+      final workers = await _dbService.getAllWorkers();
+      RegisteredWorker? matchedWorker;
+      double maxSimilarity = 0.0;
+      for (final worker in workers) {
+        double similarity = 0.0;
+        for (final storedEmbedding in worker.faceEmbeddings) {
+          final currentSimilarity = widget.faceRecognitionService.calculateSimilarity(embedding, storedEmbedding);
+          similarity = max(similarity, currentSimilarity);
+        }
+        if (similarity > maxSimilarity) {
+          maxSimilarity = similarity;
+          matchedWorker = worker;
+        }
+      }
+      if (matchedWorker != null && maxSimilarity >= FaceRecognitionService.similarityThreshold) {
+        final currentTime = DateTime.now();
+        final workLog = WorkLog(
+          workerId: matchedWorker.id,
+          timestamp: currentTime,
+          isEntry: _isEntryMode,
+        );
+        await _dbService.addWorkLog(workLog);
+        _showFeedback(
+          _isEntryMode
+            ? '¡Bienvenido, ${matchedWorker.name}! Tu ingreso ha sido registrado.'
+            : '¡Hasta pronto, ${matchedWorker.name}! Tu salida ha sido registrada.',
+          isSuccess: true
+        );
+        _resetDetection();
+      } else {
+        _recognitionAttempts++;
+        if (_recognitionAttempts >= _maxAttempts) {
+          _showFeedback('No se encontró coincidencia tras $_recognitionAttempts intentos', isSuccess: false);
+          await Future.delayed(const Duration(seconds: 2));
+          _resetDetection();
+          return;
+        }
+        _showFeedback('No se encontró coincidencia', isSuccess: false);
+        await Future.delayed(const Duration(seconds: 2));
+        await _detectFaceAndProcess();
+      }
+    } catch (e) {
+      _recognitionAttempts++;
+      if (_recognitionAttempts >= _maxAttempts) {
+        _showFeedback('Error tras $_recognitionAttempts intentos: ${e.toString()}', isSuccess: false);
+        await Future.delayed(const Duration(seconds: 2));
+        _resetDetection();
+        return;
+      }
+      _showFeedback('Error al procesar imagen: ${e.toString()}', isSuccess: false);
+      await Future.delayed(const Duration(seconds: 2));
+      await _detectFaceAndProcess();
+    }
+  }
+
+  void _resetDetection() {
+    setState(() {
+      _isDetecting = false;
+      _isCameraInitialized = false;
+      _cameraController?.dispose();
+      _cameraController = null;
+      _recognitionAttempts = 0;
+    });
+  }
+
   void _showFeedback(String message, {bool isSuccess = false}) {
     setState(() {
       _feedbackMessage = message;
       _isSuccess = isSuccess;
     });
-
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) {
         setState(() {
@@ -97,48 +169,52 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _showAdminPasswordDialog() async {
-    final passwordController = TextEditingController();
-    await showDialog<void>(
+  void _showAdminPasswordDialog() {
+    showDialog(
       context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
+      builder: (context) {
+        String password = '';
         return AlertDialog(
-          title: const Text('Acceso de Administrador'),
-          content: SingleChildScrollView(
-            child: ListBody(
-              children: <Widget>[
-                const Text('Por favor, introduce la contraseña.'),
-                TextField(
-                  controller: passwordController,
-                  obscureText: true,
-                  autofocus: true,
-                ),
-              ],
+          title: const Text('Acceso Administrador'),
+          content: TextField(
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Contraseña',
             ),
+            onChanged: (value) {
+              password = value;
+            },
           ),
-          actions: <Widget>[
+          actions: [
             TextButton(
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.grey[300],
+                foregroundColor: Colors.black,
+              ),
               child: const Text('Cancelar'),
               onPressed: () {
                 Navigator.of(context).pop();
               },
             ),
             TextButton(
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.red[700],
+                foregroundColor: Colors.white,
+              ),
               child: const Text('Acceder'),
-              onPressed: () {
-                // TODO: Usar un método de autenticación más seguro
-                if (passwordController.text == '1234') {
-                  Navigator.of(context).pop(); // Cierra el diálogo
+              onPressed: () async {
+                if (password == '1234') {
+                  Navigator.of(context).pop();
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (context) => AdminPage(
                         faceRecognitionService: widget.faceRecognitionService,
                       ),
                     ),
-                  ).then((_) => _initializeCamera()); // Re-inicializa la cámara al volver
+                  );
                 } else {
                   Navigator.of(context).pop();
+                  _showFeedback('Contraseña incorrecta', isSuccess: false);
                 }
               },
             ),
@@ -148,72 +224,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _processFaceRecognition() async {
-    if (!_isCameraInitialized || _cameraController == null) {
-      _showFeedback('La cámara no está lista', isSuccess: false);
-      return;
-    }
-
-    try {
-      // Tomar la foto
-      final XFile imageFile = await _cameraController!.takePicture();
-      // Procesar la imagen para reconocimiento facial
-      var embedding = await widget.faceRecognitionService.processImage(imageFile);
-      embedding = _normalize(embedding);
-
-      // Buscar coincidencia en la base de datos usando distancia coseno
-      final workers = _dbService.getAllWorkers();
-      RegisteredWorker? matchedWorker;
-      double maxSimilarity = -1.0;
-      for (final worker in workers) {
-        final workerEmbedding = _normalize(worker.embedding);
-        final similarity = _cosineSimilarity(workerEmbedding, embedding);
-        if (similarity > maxSimilarity) {
-          maxSimilarity = similarity;
-          matchedWorker = worker;
-        }
-      }
-      // Umbral de similitud (ajustado para coseno, más estricto)
-      const threshold = 0.78; // 1.0 es idéntico, 0.0 es ortogonal
-      if (matchedWorker != null && maxSimilarity > threshold) {
-        // Registrar entrada/salida
-        final log = WorkLog(
-          workerName: matchedWorker.name,
-          timestamp: DateTime.now(),
-          logType: "entrada", // Puedes cambiar a "salida" según el botón
-        );
-        await _dbService.saveWorkLog(log);
-        _showFeedback('¡Bienvenido, ${matchedWorker.name}!\nSimilitud: ${maxSimilarity.toStringAsFixed(3)}', isSuccess: true);
-      } else {
-        _showFeedback('No se encontró coincidencia.\nSimilitud máxima: ${maxSimilarity.toStringAsFixed(3)}', isSuccess: false);
-      }
-    } catch (e) {
-      _showFeedback('Error al procesar la imagen: \n${e.toString()}', isSuccess: false);
-    }
-  }
-
-  List<double> _normalize(List<double> v) {
-    final norm = sqrt(v.fold(0.0, (sum, x) => sum + x * x));
-    return v.map((x) => x / (norm == 0 ? 1 : norm)).toList();
-  }
-
-  double _cosineSimilarity(List<double> a, List<double> b) {
-    double dot = 0.0;
-    double normA = 0.0;
-    double normB = 0.0;
-    for (int i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    return dot / (sqrt(normA) * sqrt(normB));
-  }
-
   @override
   Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final cameraHeight = media.size.height * 0.45;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AgroID'),
+        title: SizedBox(
+          height: 90,
+          child: Image.asset(
+            'assets/logo.png',
+            fit: BoxFit.contain,
+          ),
+        ),
         centerTitle: true,
         actions: [
           IconButton(
@@ -223,50 +246,71 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            const SiomaLogo(size: 120),
-            const SizedBox(height: 24),
-            Expanded(
-              child: _buildCameraPreview(),
-            ),
-            const SizedBox(height: 24),
-            if (_feedbackMessage.isNotEmpty) _buildFeedbackWidget(),
-            const Spacer(),
-            _buildActionButtons(),
-          ],
+      body: WillPopScope(
+        onWillPop: () async => !_isDetecting,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  if (!_isDetecting) ...[
+                    SizedBox(height: media.size.height * 0.06),
+                    Center(
+                      child: Image.asset(
+                        'assets/logoviser.png',
+                        height: 400,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    SizedBox(height: media.size.height * 0.06),
+                  ],
+                  if (_isDetecting)
+                    Expanded(
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: 9 / 16,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: Container(
+                              height: cameraHeight,
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: Colors.black,
+                                border: Border.all(
+                                  color: Theme.of(context).primaryColor.withAlpha(128),
+                                  width: 2,
+                                ),
+                              ),
+                              child: _isCameraInitialized && _cameraController != null
+                                  ? CameraPreview(_cameraController!)
+                                  : const Center(child: CircularProgressIndicator()),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    _buildMainButtons(),
+                  SizedBox(height: media.size.height * 0.03),
+                  if (_feedbackMessage.isNotEmpty)
+                    _buildFeedbackWidget(media),
+                  const Spacer(),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildCameraPreview() {
-    final theme = Theme.of(context);
-    if (!_isCameraInitialized || _cameraController == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    return AspectRatio(
-      aspectRatio: 9 / 16,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.black,
-            border: Border.all(
-              color: theme.primaryColor.withAlpha(128),
-              width: 2,
-            ),
-          ),
-          child: CameraPreview(_cameraController!),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFeedbackWidget() {
+  Widget _buildFeedbackWidget(MediaQueryData media) {
     return Container(
+      width: double.infinity,
+      constraints: BoxConstraints(
+        maxWidth: media.size.width * 0.95,
+      ),
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
         color: _isSuccess ? Colors.green[100] : Colors.red[100],
@@ -278,13 +322,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           Icon(
             _isSuccess ? Icons.check_circle : Icons.error,
             color: _isSuccess ? Colors.green[800] : Colors.red[800],
+            size: 28,
           ),
           const SizedBox(width: 8),
-          Text(
-            _feedbackMessage,
-            style: TextStyle(
-              color: _isSuccess ? Colors.green[800] : Colors.red[800],
-              fontWeight: FontWeight.bold,
+          Flexible(
+            child: Text(
+              _feedbackMessage,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: _isSuccess ? Colors.green[800] : Colors.red[800],
+                fontWeight: FontWeight.bold,
+                fontSize: media.size.width < 400 ? 14 : 18,
+                overflow: TextOverflow.ellipsis,
+              ),
+              maxLines: 2,
             ),
           ),
         ],
@@ -292,19 +343,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildActionButtons() {
+  Widget _buildMainButtons() {
     return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
         Expanded(
           child: ElevatedButton(
-            onPressed: _processFaceRecognition,
+            onPressed: () => _startDetection(true),
             child: const Text('Registrar Entrada'),
           ),
         ),
         const SizedBox(width: 16),
         Expanded(
           child: ElevatedButton(
-            onPressed: _processFaceRecognition,
+            onPressed: () => _startDetection(false),
             child: const Text('Registrar Salida'),
           ),
         ),

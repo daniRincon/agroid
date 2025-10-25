@@ -8,8 +8,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:agroid/main.dart';
-import 'package:agroid/domain/services/face_recognition_service.dart';
+import 'package:viser/main.dart';
+import 'package:viser/domain/services/face_recognition_service.dart';
 
 void main() {
   testWidgets('Counter increments smoke test', (WidgetTester tester) async {

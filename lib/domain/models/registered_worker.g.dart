@@ -18,18 +18,32 @@ class RegisteredWorkerAdapter extends TypeAdapter<RegisteredWorker> {
     };
     return RegisteredWorker(
       name: fields[0] as String,
-      embedding: (fields[1] as List).cast<double>(),
+      faceEmbeddings: (fields[1] as List)
+          .map((dynamic e) => (e as List).cast<double>())
+          .toList(),
+      cedula: fields[3] as String,
+      cargo: fields[4] as String,
+      enabled: fields[5] as bool,
+      id: fields[2] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, RegisteredWorker obj) {
     writer
-      ..writeByte(2)
+      ..writeByte(6)
       ..writeByte(0)
       ..write(obj.name)
       ..writeByte(1)
-      ..write(obj.embedding);
+      ..write(obj.faceEmbeddings)
+      ..writeByte(2)
+      ..write(obj.id)
+      ..writeByte(3)
+      ..write(obj.cedula)
+      ..writeByte(4)
+      ..write(obj.cargo)
+      ..writeByte(5)
+      ..write(obj.enabled);
   }
 
   @override

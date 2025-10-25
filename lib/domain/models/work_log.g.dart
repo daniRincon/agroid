@@ -17,9 +17,9 @@ class WorkLogAdapter extends TypeAdapter<WorkLog> {
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
     return WorkLog(
-      workerName: fields[0] as String,
+      workerId: fields[0] as String,
       timestamp: fields[1] as DateTime,
-      logType: fields[2] as String,
+      isEntry: fields[2] as bool,
       isSynced: fields[3] as bool,
     );
   }
@@ -29,11 +29,11 @@ class WorkLogAdapter extends TypeAdapter<WorkLog> {
     writer
       ..writeByte(4)
       ..writeByte(0)
-      ..write(obj.workerName)
+      ..write(obj.workerId)
       ..writeByte(1)
       ..write(obj.timestamp)
       ..writeByte(2)
-      ..write(obj.logType)
+      ..write(obj.isEntry)
       ..writeByte(3)
       ..write(obj.isSynced);
   }
