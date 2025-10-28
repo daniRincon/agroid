@@ -1,40 +1,47 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:viser/config/theme/theme.dart';
 import 'package:viser/domain/services/database_service.dart';
 import 'package:viser/domain/services/face_recognition_service.dart';
 import 'package:viser/presentation/screens/home_page.dart';
-import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 
 Future<void> main() async {
-  // Asegurarse de que los bindings de Flutter estén inicializados
   WidgetsFlutterBinding.ensureInitialized();
-  print('🚀 Iniciando AgroID...');
 
-  // TEMPORAL: Forzar eliminación de cajas antiguas para resolver problemas de migración
-  try {
+  // Captura errores globales
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    debugPrint('❌ Flutter Error: ${details.exception}');
+  };
+
+  await runZonedGuarded(() async {
+    print('🚀 Iniciando VISER...');
+
+    // Inicializar Hive
     print('📦 Inicializando Hive...');
     await Hive.initFlutter();
+    // Si necesitas limpiar cajas antiguas descomenta:
     // await Hive.deleteBoxFromDisk('work_logs');
     // await Hive.deleteBoxFromDisk('registered_workers');
-    print('✅ Cajas antiguas eliminadas exitosamente');
-  } catch (e) {
-    print('⚠️ No se pudieron eliminar las cajas (probablemente no existen): $e');
-  }
 
-  // Inicializar la base de datos
-  print('💾 Inicializando base de datos...');
-  final dbService = DatabaseService();
-  await dbService.init();
-  print('✅ Base de datos inicializada');
+    // Inicializar base de datos
+    print('💾 Inicializando base de datos...');
+    final dbService = DatabaseService();
+    await dbService.init();
+    print('✅ Base de datos lista');
 
-  // Cargar el modelo de reconocimiento facial
-  print('🤖 Cargando modelo de reconocimiento facial...');
-  final faceRecognitionService = FaceRecognitionService();
-  await faceRecognitionService.loadModel();
-  print('✅ Modelo cargado exitosamente');
+    // Inicializar servicio de reconocimiento facial
+    print('🤖 Cargando modelo de reconocimiento facial...');
+    final faceRecognitionService = FaceRecognitionService();
+    await faceRecognitionService.loadModel();
+    print('✅ Modelo cargado correctamente');
 
-  print('🎉 Iniciando aplicación...');
-  runApp(MyApp(faceRecognitionService: faceRecognitionService));
+    // Ejecutar aplicación
+    runApp(MyApp(faceRecognitionService: faceRecognitionService));
+  }, (error, stackTrace) {
+    debugPrint('🔥 Error no controlado: $error');
+  });
 }
 
 class MyApp extends StatelessWidget {
@@ -45,10 +52,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AgroID',
+      title: 'VISER',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.themeData,
       home: HomePage(faceRecognitionService: faceRecognitionService),
+      // Si deseas usar Material 3 y adaptaciones automáticas
+      themeMode: ThemeMode.light,
     );
   }
 }
